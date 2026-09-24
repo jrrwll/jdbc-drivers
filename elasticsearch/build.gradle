@@ -1,0 +1,6 @@
+dependencies {
+    implementation libs.dreamcat.common
+    implementation libs.bundles.jackson
+    implementation libs.bundles.hc
+    implementation libs.jsqlparser
+}

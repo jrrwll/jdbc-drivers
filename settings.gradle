@@ -1,0 +1,4 @@
+rootProject.name = 'jdbc-drivers'
+
+include 'elasticsearch-jdbc-driver'
+project(":elasticsearch-jdbc-driver").projectDir = file("$rootDir/elasticsearch")
