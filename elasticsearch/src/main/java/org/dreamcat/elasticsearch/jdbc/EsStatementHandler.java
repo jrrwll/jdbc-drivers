@@ -1,26 +1,25 @@
-package org.dreamcat.elasticsearch;
+package org.dreamcat.elasticsearch.jdbc;
+
+import org.dreamcat.elasticsearch.client.EsSearchClient;
+import org.dreamcat.elasticsearch.client.EsUpdateClient;
 
 import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Method;
-import java.lang.reflect.Proxy;
 import java.sql.Connection;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.SQLFeatureNotSupportedException;
-import java.util.ArrayList;
-import java.util.Collections;
+import java.sql.Statement;
 
 final class EsStatementHandler implements InvocationHandler {
 
     private final Connection connection;
-    private final EsSearchClient client;
+    private final EsStatementExecutor executor;
     private boolean closed;
-    private ResultSet resultSet;
-    private long maxRows;
 
-    EsStatementHandler(Connection connection, EsSearchClient client) {
+    EsStatementHandler(Connection connection, EsSearchClient searchClient, EsUpdateClient updateClient) {
         this.connection = connection;
-        this.client = client;
+        this.executor = new EsStatementExecutor(connection, searchClient, updateClient);
     }
 
     @Override
@@ -30,7 +29,7 @@ final class EsStatementHandler implements InvocationHandler {
         switch (method.getName()) {
             case "close":
                 closed = true;
-                if (resultSet != null) resultSet.close();
+                executor.close();
                 return null;
             case "isClosed":
                 return closed || connection.isClosed();
@@ -39,14 +38,21 @@ final class EsStatementHandler implements InvocationHandler {
         switch (method.getName()) {
             case "executeQuery":
                 requireSql(args);
-                resultSet = execute((String) args[0]);
-                return resultSet;
+                return executor.executeQuery((String) args[0]);
             case "execute":
                 requireSql(args);
-                resultSet = execute((String) args[0]);
-                return true;
+                checkGeneratedKeys(method, args);
+                return executor.execute((String) args[0]);
+            case "executeUpdate":
+                requireSql(args);
+                checkGeneratedKeys(method, args);
+                return (int) executor.executeUpdate((String) args[0]);
+            case "executeLargeUpdate":
+                requireSql(args);
+                checkGeneratedKeys(method, args);
+                return executor.executeUpdate((String) args[0]);
             case "getResultSet":
-                return resultSet;
+                return executor.getResultSet();
             case "getConnection":
                 return connection;
             case "getResultSetType":
@@ -56,31 +62,22 @@ final class EsStatementHandler implements InvocationHandler {
             case "getResultSetHoldability":
                 return ResultSet.CLOSE_CURSORS_AT_COMMIT;
             case "getUpdateCount":
-                return -1;
+                return (int) Math.min(executor.getUpdateCount(), Integer.MAX_VALUE);
             case "getLargeUpdateCount":
-                return -1L;
+                return executor.getUpdateCount();
             case "setMaxRows":
             case "setLargeMaxRows":
                 long value = ((Number) args[0]).longValue();
                 if (value < 0) throw new SQLException("Maximum rows must not be negative");
-                maxRows = value;
+                executor.setMaxRows(value);
                 return null;
             case "getMaxRows":
-                return (int) Math.min(maxRows, Integer.MAX_VALUE);
+                return (int) Math.min(executor.getMaxRows(), Integer.MAX_VALUE);
             case "getLargeMaxRows":
-                return maxRows;
+                return executor.getMaxRows();
             case "getMoreResults":
-                int mode =
-                        args == null || args.length == 0 ? java.sql.Statement.CLOSE_CURRENT_RESULT : (Integer) args[0];
-                if (mode == java.sql.Statement.KEEP_CURRENT_RESULT) {
-                    throw new SQLFeatureNotSupportedException("Keeping multiple results is not supported");
-                }
-                if (mode != java.sql.Statement.CLOSE_CURRENT_RESULT && mode != java.sql.Statement.CLOSE_ALL_RESULTS) {
-                    throw new SQLException("Invalid result closing mode");
-                }
-                if (resultSet != null) resultSet.close();
-                resultSet = null;
-                return false;
+                int mode = args == null || args.length == 0 ? Statement.CLOSE_CURRENT_RESULT : (Integer) args[0];
+                return executor.getMoreResults(mode);
             case "getWarnings":
                 return null;
             case "clearWarnings":
@@ -92,9 +89,14 @@ final class EsStatementHandler implements InvocationHandler {
                     throw new SQLFeatureNotSupportedException("Only forward fetch is supported");
                 return null;
             case "setFetchSize":
+            case "setEscapeProcessing":
+            case "setCursorName":
+            case "closeOnCompletion":
                 return null;
             case "getFetchSize":
                 return 0;
+            case "isCloseOnCompletion":
+                return false;
             case "isPoolable":
                 return false;
             case "setPoolable":
@@ -109,22 +111,12 @@ final class EsStatementHandler implements InvocationHandler {
         }
     }
 
-    private ResultSet execute(String sql) throws SQLException {
-        if (resultSet != null) resultSet.close();
-        resultSet = null;
-        SqlQuery query = SqlQuery.parse(sql, connection.getCatalog());
-        SearchResult result;
-        if (query.isConnectionProbe()) {
-            result = new SearchResult(query.columns, Collections.singletonList(query.probeRow));
-        } else {
-            if (maxRows > 0) query.body.put("size", (int) Math.min(maxRows, (Integer) query.body.get("size")));
-            result = client.search(query);
+    private static void checkGeneratedKeys(Method method, Object[] args) throws SQLException {
+        if (args.length == 1) return;
+        if (args.length == 2 && args[1] instanceof Integer && (Integer) args[1] == Statement.NO_GENERATED_KEYS) {
+            return;
         }
-        if (maxRows > 0 && result.rows.size() > maxRows) {
-            result = new SearchResult(result.columns, new ArrayList<>(result.rows.subList(0, (int) maxRows)));
-        }
-        return (ResultSet) Proxy.newProxyInstance(Driver.class.getClassLoader(), new Class<?>[]{ResultSet.class},
-                new EsResultSetHandler(result));
+        throw new SQLFeatureNotSupportedException(method.getName() + " generated keys are not supported");
     }
 
     private static void requireSql(Object[] args) throws SQLException {

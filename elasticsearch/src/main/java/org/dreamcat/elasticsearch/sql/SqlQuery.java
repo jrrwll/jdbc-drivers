@@ -1,18 +1,8 @@
-package org.dreamcat.elasticsearch;
+package org.dreamcat.elasticsearch.sql;
 
 import net.sf.jsqlparser.expression.BinaryExpression;
-import net.sf.jsqlparser.expression.DateValue;
-import net.sf.jsqlparser.expression.DoubleValue;
 import net.sf.jsqlparser.expression.Expression;
-import net.sf.jsqlparser.expression.Function;
-import net.sf.jsqlparser.expression.JdbcParameter;
-import net.sf.jsqlparser.expression.LongValue;
-import net.sf.jsqlparser.expression.NullValue;
 import net.sf.jsqlparser.expression.Parenthesis;
-import net.sf.jsqlparser.expression.SignedExpression;
-import net.sf.jsqlparser.expression.StringValue;
-import net.sf.jsqlparser.expression.TimeValue;
-import net.sf.jsqlparser.expression.TimestampValue;
 import net.sf.jsqlparser.expression.operators.conditional.AndExpression;
 import net.sf.jsqlparser.expression.operators.conditional.OrExpression;
 import net.sf.jsqlparser.expression.operators.relational.Between;
@@ -20,7 +10,6 @@ import net.sf.jsqlparser.expression.operators.relational.ExpressionList;
 import net.sf.jsqlparser.expression.operators.relational.InExpression;
 import net.sf.jsqlparser.expression.operators.relational.IsNullExpression;
 import net.sf.jsqlparser.expression.operators.relational.LikeExpression;
-import net.sf.jsqlparser.parser.CCJSqlParserUtil;
 import net.sf.jsqlparser.schema.Column;
 import net.sf.jsqlparser.schema.Table;
 import net.sf.jsqlparser.statement.Statement;
@@ -33,7 +22,6 @@ import net.sf.jsqlparser.statement.select.PlainSelect;
 import net.sf.jsqlparser.statement.select.Select;
 import net.sf.jsqlparser.statement.select.SelectItem;
 
-import java.math.BigDecimal;
 import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -42,15 +30,15 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
-final class SqlQuery {
+public final class SqlQuery implements SqlCommand {
 
     static final int DEFAULT_LIMIT = 500;
 
-    final String index;
-    final boolean allColumns;
-    final List<String> columns;
-    final Map<String, Object> body;
-    final Map<String, Object> probeRow;
+    public final String index;
+    public final boolean allColumns;
+    public final List<String> columns;
+    public final Map<String, Object> body;
+    public final Map<String, Object> probeRow;
 
     private SqlQuery(String index, boolean allColumns, List<String> columns, Map<String, Object> body,
             Map<String, Object> probeRow) {
@@ -66,15 +54,12 @@ final class SqlQuery {
     }
 
     static SqlQuery parse(String sql, String catalog) throws SQLException {
-        if (sql == null || sql.trim().isEmpty()) throw new SQLException("SQL must not be empty");
-        final Statement statement;
-        try {
-            statement = CCJSqlParserUtil.parse(sql);
-        } catch (Exception e) {
-            throw new SQLException("Invalid SQL", e);
-        }
+        Statement statement = SqlSupport.parse(sql);
         if (!(statement instanceof Select)) throw new SQLException("Only SELECT statements are supported");
-        Select select = (Select) statement;
+        return from((Select) statement, catalog);
+    }
+
+    static SqlQuery from(Select select, String catalog) throws SQLException {
         if (!(select instanceof PlainSelect)) throw new SQLException("Only a single SELECT is supported");
         PlainSelect plain = (PlainSelect) select;
         if (plain.getDistinct() != null || plain.getGroupBy() != null || plain.getHaving() != null) {
@@ -93,18 +78,19 @@ final class SqlQuery {
         if (from == null) return connectionProbe(select, plain);
         if (!(from instanceof Table)) throw new SQLException("A single index is required in FROM");
         Table table = (Table) from;
+        String index = table.getName() == null ? null : SqlSupport.identifier(table.getName());
         if (table.getNameParts().size() > 2 || table.getPivot() != null || table.getUnPivot() != null
-                || table.getName() == null || !table.getName().matches("[A-Za-z0-9._-]+")) {
+                || index == null || !index.matches("[A-Za-z0-9._-]+")) {
             throw new SQLException("Only a plain single index is supported");
         }
-        if (table.getSchemaName() != null && (catalog == null || !identifier(table.getSchemaName()).equals(catalog))) {
+        if (table.getSchemaName() != null && (catalog == null
+                || !SqlSupport.identifier(table.getSchemaName()).equals(catalog))) {
             throw new SQLException("Unknown catalog: " + table.getSchemaName());
         }
-        String alias = table.getAlias() == null ? null : table.getAlias().getName();
+        String alias = table.getAlias() == null ? null : SqlSupport.identifier(table.getAlias().getName());
         if (alias != null && !alias.matches("[A-Za-z_][A-Za-z0-9_]*")) {
             throw new SQLException("Invalid table alias");
         }
-        String index = table.getName();
         if (index.isEmpty() || ".".equals(index) || "..".equals(index)) throw new SQLException("Invalid index name");
 
         List<String> columns = new ArrayList<>();
@@ -114,7 +100,7 @@ final class SqlQuery {
             Expression expression = item.getExpression();
             if (expression instanceof AllTableColumns) {
                 if (plain.getSelectItems().size() != 1) throw new SQLException("* cannot be combined with columns");
-                String qualifier = ((AllTableColumns) expression).getTable().getName();
+                String qualifier = SqlSupport.identifier(((AllTableColumns) expression).getTable().getName());
                 if (!qualifier.equals(alias == null ? index : alias))
                     throw new SQLException("Unknown table qualifier: " + qualifier);
                 allColumns = true;
@@ -122,7 +108,7 @@ final class SqlQuery {
                 if (plain.getSelectItems().size() != 1) throw new SQLException("* cannot be combined with columns");
                 allColumns = true;
             } else if (expression instanceof Column) {
-                columns.add(field((Column) expression, alias));
+                columns.add(SqlSupport.field((Column) expression, alias));
             } else {
                 throw new SQLException("Only column names or * are supported in SELECT");
             }
@@ -133,15 +119,16 @@ final class SqlQuery {
         List<String> sourceColumns = new ArrayList<>(columns);
         sourceColumns.remove("_id");
         body.put("_source", allColumns ? true : sourceColumns);
-        body.put("query",
-                plain.getWhere() == null ? map("match_all", Collections.emptyMap()) : toQuery(plain.getWhere(), alias));
+        body.put("query", plain.getWhere() == null
+                ? SqlSupport.map("match_all", Collections.emptyMap())
+                : toQuery(plain.getWhere(), alias));
         if (select.getOrderByElements() != null && !select.getOrderByElements().isEmpty()) {
             List<Object> sorts = new ArrayList<>();
             for (OrderByElement order : select.getOrderByElements()) {
                 if (!(order.getExpression() instanceof Column))
                     throw new SQLException("ORDER BY only supports columns");
                 Map<String, Object> sort = new LinkedHashMap<>();
-                sort.put(field((Column) order.getExpression(), alias), order.isAsc() ? "asc" : "desc");
+                sort.put(SqlSupport.field((Column) order.getExpression(), alias), order.isAsc() ? "asc" : "desc");
                 sorts.add(sort);
             }
             body.put("sort", sorts);
@@ -152,16 +139,16 @@ final class SqlQuery {
         if (limitNode != null) {
             if (limitNode.isLimitAll() || limitNode.getRowCount() == null)
                 throw new SQLException("LIMIT ALL is not supported");
-            limit = nonNegativeInt(limitNode.getRowCount(), "LIMIT");
-            if (limitNode.getOffset() != null) offset = nonNegativeInt(limitNode.getOffset(), "OFFSET");
+            limit = SqlSupport.nonNegativeInt(limitNode.getRowCount(), "LIMIT");
+            if (limitNode.getOffset() != null) offset = SqlSupport.nonNegativeInt(limitNode.getOffset(), "OFFSET");
         }
-        if (select.getOffset() != null) offset = nonNegativeInt(select.getOffset().getOffset(), "OFFSET");
+        if (select.getOffset() != null) offset = SqlSupport.nonNegativeInt(select.getOffset().getOffset(), "OFFSET");
         body.put("from", offset);
         body.put("size", limit);
         return new SqlQuery(index, allColumns, columns, body, null);
     }
 
-    boolean isConnectionProbe() {
+    public boolean isConnectionProbe() {
         return index == null;
     }
 
@@ -169,7 +156,7 @@ final class SqlQuery {
         if (plain.getWhere() != null || select.getOrderByElements() != null || select.getOffset() != null
                 || select.getLimit() != null && (select.getLimit().getOffset() != null
                 || select.getLimit().isLimitAll() || select.getLimit().getRowCount() == null
-                || nonNegativeInt(select.getLimit().getRowCount(), "LIMIT") != 1)) {
+                || SqlSupport.nonNegativeInt(select.getLimit().getRowCount(), "LIMIT") != 1)) {
             throw new SQLException("Only literal connection probes are supported without FROM");
         }
         Map<String, Object> row = new LinkedHashMap<>();
@@ -177,7 +164,7 @@ final class SqlQuery {
             Expression expression = item.getExpression();
             Object value;
             try {
-                value = literal(expression);
+                value = SqlSupport.literal(expression);
             } catch (SQLException e) {
                 throw new SQLException("Only literal connection probes are supported without FROM", e);
             }
@@ -199,7 +186,7 @@ final class SqlQuery {
             bool.put("should", Arrays.asList(toQuery(((OrExpression) expression).getLeftExpression(), alias),
                     toQuery(((OrExpression) expression).getRightExpression(), alias)));
             bool.put("minimum_should_match", 1);
-            return map("bool", bool);
+            return SqlSupport.map("bool", bool);
         }
         if (expression instanceof LikeExpression) return like((LikeExpression) expression, alias);
         if (expression instanceof Between) return between((Between) expression, alias);
@@ -213,18 +200,18 @@ final class SqlQuery {
         if (!(expression.getLeftExpression() instanceof Column))
             throw new SQLException("Left side of a condition must be a column");
         String operator = expression.getStringExpression();
-        String field = field((Column) expression.getLeftExpression(), alias);
-        Object value = literal(expression.getRightExpression());
-        if ("=".equals(operator)) return map("term", map(field, value));
+        String field = SqlSupport.field((Column) expression.getLeftExpression(), alias);
+        Object value = SqlSupport.literal(expression.getRightExpression());
+        if ("=".equals(operator)) return SqlSupport.map("term", SqlSupport.map(field, value));
         if ("!=".equals(operator) || "<>".equals(operator))
-            return notExistingSafe(field, map("term", map(field, value)));
+            return notExistingSafe(field, SqlSupport.map("term", SqlSupport.map(field, value)));
         String rangeOperator;
         if (">".equals(operator)) rangeOperator = "gt";
         else if (">=".equals(operator)) rangeOperator = "gte";
         else if ("<".equals(operator)) rangeOperator = "lt";
         else if ("<=".equals(operator)) rangeOperator = "lte";
         else throw new SQLException("Unsupported operator: " + operator);
-        return map("range", map(field, map(rangeOperator, value)));
+        return SqlSupport.map("range", SqlSupport.map(field, SqlSupport.map(rangeOperator, value)));
     }
 
     private static Map<String, Object> like(LikeExpression expression, String alias) throws SQLException {
@@ -232,7 +219,7 @@ final class SqlQuery {
             throw new SQLException("LIKE left side must be a column");
         if (expression.getEscape() != null || expression.isCaseInsensitive())
             throw new SQLException("LIKE ESCAPE and ILIKE are not supported");
-        Object value = literal(expression.getRightExpression());
+        Object value = SqlSupport.literal(expression.getRightExpression());
         if (!(value instanceof String)) throw new SQLException("LIKE pattern must be a string");
         StringBuilder wildcard = new StringBuilder();
         for (char c : ((String) value).toCharArray()) {
@@ -243,19 +230,19 @@ final class SqlQuery {
                 wildcard.append(c);
             }
         }
-        String field = field((Column) expression.getLeftExpression(), alias);
-        Map<String, Object> clause = map("wildcard", map(field, wildcard.toString()));
+        String field = SqlSupport.field((Column) expression.getLeftExpression(), alias);
+        Map<String, Object> clause = SqlSupport.map("wildcard", SqlSupport.map(field, wildcard.toString()));
         return expression.isNot() ? notExistingSafe(field, clause) : clause;
     }
 
     private static Map<String, Object> between(Between expression, String alias) throws SQLException {
         if (!(expression.getLeftExpression() instanceof Column))
             throw new SQLException("BETWEEN left side must be a column");
-        String field = field((Column) expression.getLeftExpression(), alias);
+        String field = SqlSupport.field((Column) expression.getLeftExpression(), alias);
         Map<String, Object> range = new LinkedHashMap<>();
-        range.put("gte", literal(expression.getBetweenExpressionStart()));
-        range.put("lte", literal(expression.getBetweenExpressionEnd()));
-        Map<String, Object> clause = map("range", map(field, range));
+        range.put("gte", SqlSupport.literal(expression.getBetweenExpressionStart()));
+        range.put("lte", SqlSupport.literal(expression.getBetweenExpressionEnd()));
+        Map<String, Object> clause = SqlSupport.map("range", SqlSupport.map(field, range));
         return expression.isNot() ? notExistingSafe(field, clause) : clause;
     }
 
@@ -266,83 +253,30 @@ final class SqlQuery {
         }
         List<Object> values = new ArrayList<>();
         for (Object item : ((ExpressionList<?>) expression.getRightExpression()).getExpressions())
-            values.add(literal((Expression) item));
-        String field = field((Column) expression.getLeftExpression(), alias);
-        Map<String, Object> clause = map("terms", map(field, values));
+            values.add(SqlSupport.literal((Expression) item));
+        String field = SqlSupport.field((Column) expression.getLeftExpression(), alias);
+        Map<String, Object> clause = SqlSupport.map("terms", SqlSupport.map(field, values));
         return expression.isNot() ? notExistingSafe(field, clause) : clause;
     }
 
     private static Map<String, Object> isNull(IsNullExpression expression, String alias) throws SQLException {
         if (!(expression.getLeftExpression() instanceof Column))
             throw new SQLException("IS NULL left side must be a column");
-        Map<String, Object> exists = map("exists", map("field", field((Column) expression.getLeftExpression(), alias)));
-        return expression.isNot() ? exists : map("bool", map("must_not", Collections.singletonList(exists)));
-    }
-
-    private static Object literal(Expression expression) throws SQLException {
-        if (expression instanceof StringValue) return ((StringValue) expression).getValue();
-        if (expression instanceof LongValue) return ((LongValue) expression).getValue();
-        if (expression instanceof DoubleValue) return ((DoubleValue) expression).getValue();
-        if (expression instanceof Column && ((Column) expression).getTable() == null) {
-            String name = ((Column) expression).getColumnName();
-            if ("true".equalsIgnoreCase(name)) return true;
-            if ("false".equalsIgnoreCase(name)) return false;
-        }
-        if (expression instanceof DateValue) return ((DateValue) expression).getValue().toString();
-        if (expression instanceof TimeValue) return ((TimeValue) expression).getValue().toString();
-        if (expression instanceof TimestampValue) return ((TimestampValue) expression).getValue().toString();
-        if (expression instanceof SignedExpression) {
-            Object value = literal(((SignedExpression) expression).getExpression());
-            if (((SignedExpression) expression).getSign() == '-') {
-                if (value instanceof Long) return -((Long) value);
-                if (value instanceof Double) return -((Double) value);
-                if (value instanceof BigDecimal) return ((BigDecimal) value).negate();
-            }
-            return value;
-        }
-        if (expression instanceof NullValue || expression instanceof JdbcParameter || expression instanceof Function) {
-            throw new SQLException("Only literal values are supported in conditions");
-        }
-        throw new SQLException("Unsupported literal: " + expression);
-    }
-
-    private static String field(Column column, String alias) throws SQLException {
-        String value = column.getFullyQualifiedName();
-        if (value == null || value.isEmpty()) throw new SQLException("Column name is required");
-        if (alias != null && value.startsWith(alias + ".")) return value.substring(alias.length() + 1);
-        return value;
-    }
-
-    private static String identifier(String value) {
-        if (value.length() >= 2 && value.charAt(0) == '"' && value.charAt(value.length() - 1) == '"') {
-            return value.substring(1, value.length() - 1).replace("\"\"", "\"");
-        }
-        return value;
-    }
-
-    private static int nonNegativeInt(Expression expression, String name) throws SQLException {
-        Object value = literal(expression);
-        if (!(value instanceof Long)) throw new SQLException(name + " must be an integer");
-        long number = (Long) value;
-        if (number < 0 || number > Integer.MAX_VALUE) throw new SQLException(name + " is out of range");
-        return (int) number;
+        Map<String, Object> exists = SqlSupport.map("exists",
+                SqlSupport.map("field", SqlSupport.field((Column) expression.getLeftExpression(), alias)));
+        return expression.isNot() ? exists
+                : SqlSupport.map("bool", SqlSupport.map("must_not", Collections.singletonList(exists)));
     }
 
     private static Map<String, Object> bool(String key, Map<String, Object> left, Map<String, Object> right) {
-        return map("bool", map(key, Arrays.asList(left, right)));
+        return SqlSupport.map("bool", SqlSupport.map(key, Arrays.asList(left, right)));
     }
 
     private static Map<String, Object> notExistingSafe(String field, Map<String, Object> clause) {
         Map<String, Object> body = new LinkedHashMap<>();
-        body.put("must", Collections.singletonList(map("exists", map("field", field))));
+        body.put("must", Collections.singletonList(SqlSupport.map("exists", SqlSupport.map("field", field))));
         body.put("must_not", Collections.singletonList(clause));
-        return map("bool", body);
-    }
-
-    private static Map<String, Object> map(String key, Object value) {
-        Map<String, Object> map = new LinkedHashMap<>();
-        map.put(key, value);
-        return map;
+        return SqlSupport.map("bool", body);
     }
 
     private static SQLException unsupportedExpression(Expression expression) {

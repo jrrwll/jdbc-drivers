@@ -1,6 +1,10 @@
-package org.dreamcat.elasticsearch;
+package org.dreamcat.elasticsearch.jdbc;
 
 import org.dreamcat.common.json.JsonUtil;
+import org.dreamcat.elasticsearch.Driver;
+import org.dreamcat.elasticsearch.client.EsHttpClient;
+import org.dreamcat.elasticsearch.client.SearchResult;
+import org.dreamcat.elasticsearch.config.EsConfig;
 
 import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Method;
@@ -92,7 +96,7 @@ final class EsDatabaseMetaDataHandler implements InvocationHandler {
             case "getJDBCMinorVersion":
                 return 2;
             case "isReadOnly":
-                return true;
+                return false;
             case "supportsTransactions":
             case "supportsBatchUpdates":
             case "supportsGroupBy":
@@ -424,7 +428,8 @@ final class EsDatabaseMetaDataHandler implements InvocationHandler {
     }
 
     private static ResultSet rows(List<String> columns, List<Map<String, Object>> data) {
-        return (ResultSet) Proxy.newProxyInstance(Driver.class.getClassLoader(), new Class<?>[]{ResultSet.class},
+        return (ResultSet) Proxy.newProxyInstance(EsDatabaseMetaDataHandler.class.getClassLoader(),
+                new Class<?>[]{ResultSet.class},
                 new EsResultSetHandler(new SearchResult(columns, data)));
     }
 

@@ -1,10 +1,11 @@
-package org.dreamcat.elasticsearch;
+package org.dreamcat.elasticsearch.client;
 
 import org.apache.hc.core5.http.ClassicHttpResponse;
 import org.apache.hc.core5.http.ParseException;
 import org.apache.hc.core5.http.io.entity.EntityUtils;
 import org.dreamcat.common.codec.Base64Util;
 import org.dreamcat.common.hc.httpclient.HcHttpFetcher;
+import org.dreamcat.elasticsearch.config.EsConfig;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -12,16 +13,16 @@ import java.sql.SQLException;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
-final class EsHttpClient {
+public final class EsHttpClient {
 
     private final EsConfig config;
     private final HcHttpFetcher fetcher = new HcHttpFetcher();
 
-    EsHttpClient(EsConfig config) {
+    public EsHttpClient(EsConfig config) {
         this.config = config;
     }
 
-    String get(String path) throws SQLException {
+    public String get(String path) throws SQLException {
         try (ClassicHttpResponse response = fetcher.get(config.endpoint + path, headers())) {
             return read(response, "GET", path);
         } catch (IOException e) {
@@ -29,7 +30,7 @@ final class EsHttpClient {
         }
     }
 
-    String postJson(String path, String requestJson) throws SQLException {
+    public String postJson(String path, String requestJson) throws SQLException {
         try (ClassicHttpResponse response = fetcher.postJson(config.endpoint + path, headers(), requestJson)) {
             return read(response, "POST", path);
         } catch (IOException e) {

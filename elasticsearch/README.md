@@ -2,7 +2,7 @@
 
 > 构建脚本使用 Gradle 9，需要 JDK 17+ 运行 Gradle；项目源码按 Java 8 编译。
 
-一个只读的 Elasticsearch JDBC 驱动，通过 HTTP Search API 查询单个 index，不依赖 Elasticsearch Java 客户端。当前面向 ES 7.x。
+一个 Elasticsearch JDBC 驱动，通过 HTTP Search / Update API 查询单个 index，并按主键更新文档，不依赖 Elasticsearch Java 客户端。当前面向 ES 7.x。
 
 支持的SQL示例：
 
@@ -25,36 +25,34 @@ order by ctime desc, _id asc
 limit 50 offset 20
 ```
 
-## 连接与查询
+`_id` 是 ES 的文档主键，当前只支持按 `_id` 更新的 `UPDATE`（表别名可选）：
+
+```sql
+update index_name t
+set t.status = 'done', t.score = 100
+where t._id = 'doc-1'
+```
+
+## 连接与读写
 
 ```java
 import java.sql.*;
 import java.util.Properties;
 
 Properties properties = new Properties();
-properties.
+properties.setProperty("user","elastic");
+properties.setProperty("password","secret");
 
-setProperty("user","elastic");
-properties.
-
-setProperty("password","secret");
-
-try(
-Connection connection = DriverManager.getConnection("jdbc:es://localhost:9200", properties);
+try(Connection connection = DriverManager.getConnection(
+        "jdbc:es://localhost:9200", properties);
 Statement statement = connection.createStatement();
 ResultSet rows = statement.executeQuery(
         "select _id, user.name, score from records " +
                 "where score >= 100 order by score desc limit 50 offset 20")){
-        while(rows.
-
-next()){
-        System.out.
-
-println(rows.getString("_id") +" "+rows.
-
-getString("user.name"));
-        }
-        }
+    while(rows.next()){
+        System.out.println(rows.getString("_id") +" "+rows.getString("user.name"));
+    }
+}
 ```
 
 URL 支持 `jdbc:es://localhost:9200` 和 `jdbc:elasticsearch://localhost:9200`，两者行为相同。 也可以使用
@@ -69,9 +67,19 @@ IDEA 中刷新时建议设置足够窄的 `index` 模式；未设置或使用 `i
 
 支持单 index 的 `SELECT`、列名或 `*`、`WHERE` 中的括号、`AND/OR`、比较、`LIKE/NOT LIKE`、`IN/NOT IN`、`BETWEEN`、`IS NULL`、多列
 `ORDER BY`、`LIMIT/OFFSET`。未写 `LIMIT` 时请求 `size: 500`。`%`/`_` 分别转换为 ES wildcard 的 `*`/`?`。普通列从 `_source`
-读取，点号路径支持嵌套字段，缺失字段返回 `null`；显式查询的 `_id` 从 hit 元数据读取。`SELECT *` 只展开 `_source`。
+读取，点号路径支持嵌套字段，缺失字段返回 `null`；`_id` 从 hit 元数据读取。`SELECT *` 会返回 `_id` 作为第一列（供 IDEA 等客户端识别主键），再展开
+`_source`。
 
-不支持子查询、JOIN、聚合、`GROUP BY`、`HAVING`、`DISTINCT`、UNION、写操作、`PreparedStatement` 和事务。不支持的 JDBC 方法抛
+支持单 index 的按主键 `UPDATE`：`UPDATE index [AS] alias SET col = <literal>, ... WHERE _id = <literal>`。`SET` 目标可带表别名前缀，
+值只支持字面量；`WHERE` 必须包含且仅包含一个主键 `_id` 的等值条件（可带别名前缀），其余列上的等值条件会被接受但忽略（IDEA 会带上全部旧值做
+并发校验），`SET _id`、非等值条件、重复 `_id` 条件都会被明确拒绝。执行时调用 ES
+`_update` API 的 `doc` 局部更新：受影响行数在 `updated`/`noop` 时为 1，文档不存在时为 0；不传 `refresh`，遵循 ES 近实时可见性。
+
+`PreparedStatement` 支持 `SELECT` 与按主键 `UPDATE` 的 `?` 参数绑定（把参数值渲染为字面量后走同一套校验），并支持 `addBatch`/`executeBatch`；
+`SET` 值可为 `NULL`。ES 没有多文档事务，`setAutoCommit(false)`、`commit`、`rollback` 作为 no-op 接受，以兼容 IDEA 等客户端的提交流程，
+每条更新仍由 ES 单文档 `_update` 原子执行。
+
+不支持子查询、JOIN、聚合、`GROUP BY`、`HAVING`、`DISTINCT`、UNION、除按主键 `UPDATE` 外的写操作（如 `INSERT`、`DELETE`、按条件更新）。不支持的 JDBC 方法抛
 `SQLFeatureNotSupportedException`。结果集只读、仅向前遍历，一次 Search 请求读取一页；ES 的 `index.max_result_window` 限制仍适用。
 
 IDEA 生成的 catalog 限定名与表别名也可用，例如 `SELECT t.* FROM "es-dev-test".some_index t`。catalog 必须是当前 ES
@@ -94,5 +102,5 @@ cluster；表别名前缀会从查询字段中去掉。为兼容 IDE 的连接�
 执行 `./gradlew elasticsearch-jdbc-driver:shadowJar`，在 IDEA Database 创建自定义 JDBC Driver：
 
 - Driver Files 添加 `elasticsearch/build/libs/elasticsearch-jdbc-driver-0.1-SNAPSHOT-all.jar`
-- Driver Class 填 `org.dreamcat.elasticsearch.jdbc.Driver`
+- Driver Class 填 `org.dreamcat.elasticsearch.Driver`
 - URL 模板填 `jdbc:es://{host::localhost}?[:{port::9200}][\?<&,user={user},password={password},{:identifier}={:param}>]`

@@ -1,4 +1,4 @@
-package org.dreamcat.elasticsearch;
+package org.dreamcat.elasticsearch.config;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;

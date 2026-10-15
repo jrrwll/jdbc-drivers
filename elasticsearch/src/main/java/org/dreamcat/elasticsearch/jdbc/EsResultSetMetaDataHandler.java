@@ -1,4 +1,6 @@
-package org.dreamcat.elasticsearch;
+package org.dreamcat.elasticsearch.jdbc;
+
+import org.dreamcat.elasticsearch.client.SearchResult;
 
 import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Method;

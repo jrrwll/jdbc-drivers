@@ -1,25 +1,34 @@
-package org.dreamcat.elasticsearch;
+package org.dreamcat.elasticsearch.jdbc;
+
+import org.dreamcat.elasticsearch.client.EsHttpClient;
+import org.dreamcat.elasticsearch.client.EsSearchClient;
+import org.dreamcat.elasticsearch.client.EsUpdateClient;
+import org.dreamcat.elasticsearch.config.EsConfig;
 
 import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
 import java.sql.Connection;
 import java.sql.DatabaseMetaData;
+import java.sql.PreparedStatement;
 import java.sql.SQLException;
 import java.sql.SQLFeatureNotSupportedException;
 import java.sql.Statement;
 
-final class EsConnectionHandler implements InvocationHandler {
+public final class EsConnectionHandler implements InvocationHandler {
 
     private final EsConfig config;
     private final EsSearchClient client;
+    private final EsUpdateClient updateClient;
     private final EsHttpClient http;
     private EsDatabaseMetaDataHandler metadata;
     private boolean closed;
+    private boolean autoCommit = true;
 
-    EsConnectionHandler(EsConfig config) {
+    public EsConnectionHandler(EsConfig config) {
         this.config = config;
         this.client = new EsSearchClient(config);
+        this.updateClient = new EsUpdateClient(config);
         this.http = new EsHttpClient(config);
     }
 
@@ -51,25 +60,29 @@ final class EsConnectionHandler implements InvocationHandler {
                         || ((Integer) args[1]) != java.sql.ResultSet.CONCUR_READ_ONLY)) {
                     throw new SQLFeatureNotSupportedException("Only forward-only read-only statements are supported");
                 }
-                return Proxy.newProxyInstance(Driver.class.getClassLoader(), new Class<?>[]{Statement.class},
-                        new EsStatementHandler((Connection) proxy, client));
+                return Proxy.newProxyInstance(EsConnectionHandler.class.getClassLoader(), new Class<?>[]{Statement.class},
+                        new EsStatementHandler((Connection) proxy, client, updateClient));
+            case "prepareStatement":
+                validatePreparedStatement(args);
+                return Proxy.newProxyInstance(EsConnectionHandler.class.getClassLoader(),
+                        new Class<?>[]{PreparedStatement.class},
+                        new EsPreparedStatementHandler((Connection) proxy, client, updateClient, (String) args[0]));
             case "getMetaData":
-                return Proxy.newProxyInstance(Driver.class.getClassLoader(), new Class<?>[]{DatabaseMetaData.class},
+                return Proxy.newProxyInstance(EsConnectionHandler.class.getClassLoader(),
+                        new Class<?>[]{DatabaseMetaData.class},
                         metadata((Connection) proxy));
             case "isReadOnly":
-                return true;
+                return false;
             case "setReadOnly":
-                if (Boolean.FALSE.equals(args[0])) throw new SQLFeatureNotSupportedException("Connection is read-only");
                 return null;
             case "getAutoCommit":
-                return true;
+                return autoCommit;
             case "setAutoCommit":
-                if (Boolean.FALSE.equals(args[0]))
-                    throw new SQLFeatureNotSupportedException("Transactions are not supported");
+                autoCommit = Boolean.TRUE.equals(args[0]);
                 return null;
             case "commit":
             case "rollback":
-                throw new SQLFeatureNotSupportedException("Transactions are not supported");
+                return null;
             case "getCatalog":
                 return metadata((Connection) proxy).clusterName();
             case "setCatalog":
@@ -81,6 +94,8 @@ final class EsConnectionHandler implements InvocationHandler {
                 return null;
             case "getTransactionIsolation":
                 return Connection.TRANSACTION_NONE;
+            case "setTransactionIsolation":
+                return null;
             case "getWarnings":
                 return null;
             case "clearWarnings":
@@ -99,6 +114,24 @@ final class EsConnectionHandler implements InvocationHandler {
 
     private void checkOpen() throws SQLException {
         if (closed) throw new SQLException("Connection is closed");
+    }
+
+    private static void validatePreparedStatement(Object[] args) throws SQLException {
+        if (args == null || args.length == 0 || !(args[0] instanceof String))
+            throw new SQLException("SQL text is required");
+        if (args.length < 2) return;
+        if (!(args[1] instanceof Integer)) {
+            throw new SQLFeatureNotSupportedException("prepareStatement generated columns are not supported");
+        }
+        if (args.length == 2) {
+            if ((Integer) args[1] != Statement.NO_GENERATED_KEYS)
+                throw new SQLFeatureNotSupportedException("prepareStatement generated keys are not supported");
+            return;
+        }
+        if ((Integer) args[1] != java.sql.ResultSet.TYPE_FORWARD_ONLY
+                || (Integer) args[2] != java.sql.ResultSet.CONCUR_READ_ONLY) {
+            throw new SQLFeatureNotSupportedException("Only forward-only read-only statements are supported");
+        }
     }
 
     private EsDatabaseMetaDataHandler metadata(Connection connection) {

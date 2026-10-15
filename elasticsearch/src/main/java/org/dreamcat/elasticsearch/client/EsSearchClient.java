@@ -1,6 +1,8 @@
-package org.dreamcat.elasticsearch;
+package org.dreamcat.elasticsearch.client;
 
 import org.dreamcat.common.json.JsonUtil;
+import org.dreamcat.elasticsearch.config.EsConfig;
+import org.dreamcat.elasticsearch.sql.SqlQuery;
 
 import java.sql.SQLException;
 import java.util.ArrayList;
@@ -12,17 +14,17 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
-final class EsSearchClient {
+public final class EsSearchClient {
 
     private final EsHttpClient httpClient;
     private final EsConfig config;
 
-    EsSearchClient(EsConfig config) {
+    public EsSearchClient(EsConfig config) {
         this.config = config;
         this.httpClient = new EsHttpClient(config);
     }
 
-    SearchResult search(SqlQuery query) throws SQLException {
+    public SearchResult search(SqlQuery query) throws SQLException {
         if (!config.allowsIndex(query.index))
             throw new SQLException("Index is not allowed by the JDBC URL: " + query.index);
         String json = httpClient.postJson("/" + query.index + "/_search", JsonUtil.toJson(query.body));
@@ -50,6 +52,7 @@ final class EsSearchClient {
                     sourceObject instanceof Map ? (Map<String, Object>) sourceObject : Collections.emptyMap();
             Map<String, Object> row = new LinkedHashMap<>();
             if (query.allColumns) {
+                row.put("_id", ((Map<?, ?>) hitObject).get("_id"));
                 flatten(source, "", row);
                 dynamicColumns.addAll(row.keySet());
             } else {

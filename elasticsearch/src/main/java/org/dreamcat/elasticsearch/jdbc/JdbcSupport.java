@@ -1,4 +1,4 @@
-package org.dreamcat.elasticsearch;
+package org.dreamcat.elasticsearch.jdbc;
 
 import java.lang.reflect.Method;
 import java.sql.SQLException;

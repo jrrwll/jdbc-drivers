@@ -19,6 +19,7 @@ import java.nio.charset.StandardCharsets;
 import java.sql.Connection;
 import java.sql.DatabaseMetaData;
 import java.sql.DriverManager;
+import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
@@ -36,6 +37,9 @@ class DriverIntegrationTest {
     private final AtomicReference<Map<String, Object>> body = new AtomicReference<>();
     private final AtomicBoolean rejectRoot = new AtomicBoolean();
     private final AtomicInteger clusterMappingRequests = new AtomicInteger();
+    private final AtomicReference<Map<String, Object>> updateBody = new AtomicReference<>();
+    private final AtomicReference<String> updatePath = new AtomicReference<>();
+    private final AtomicBoolean updateNotFound = new AtomicBoolean();
 
     @BeforeEach
     void startServer() throws Exception {
@@ -70,6 +74,16 @@ class DriverIntegrationTest {
                     "{\"records\":{\"mappings\":{\"properties\":{\"user\":{\"properties\":{\"name\":{\"type"
                             + "\":\"keyword\"}}},"
                             + "\"score\":{\"type\":\"integer\"},\"hidden\":{\"type\":\"keyword\",\"index\":false}}}}}");
+        });
+        server.createContext("/records/_update", exchange -> {
+            assertEquals("POST", exchange.getRequestMethod());
+            updatePath.set(exchange.getRequestURI().getRawPath());
+            ByteArrayOutputStream request = new ByteArrayOutputStream();
+            byte[] buffer = new byte[4096];
+            int count;
+            while ((count = exchange.getRequestBody().read(buffer)) != -1) request.write(buffer, 0, count);
+            updateBody.set(JsonUtil.fromJsonObject(new String(request.toByteArray(), StandardCharsets.UTF_8)));
+            reply(exchange, updateNotFound.get() ? "{\"result\":\"not_found\"}" : "{\"result\":\"updated\"}");
         });
         server.createContext("/", exchange -> {
             String authorization = exchange.getRequestHeaders().getFirst("Authorization");
@@ -344,8 +358,10 @@ class DriverIntegrationTest {
                 Statement statement = connection.createStatement()) {
             assertTrue(statement.execute("select * from records limit 1"));
             ResultSet rows = statement.getResultSet();
-            assertEquals(2, rows.getMetaData().getColumnCount());
+            assertEquals(3, rows.getMetaData().getColumnCount());
+            assertEquals("_id", rows.getMetaData().getColumnLabel(1));
             assertTrue(rows.next());
+            assertEquals("doc-1", rows.getString("_id"));
             assertEquals("Ada", rows.getString("user.name"));
             statement.close();
             assertTrue(statement.isClosed());
@@ -444,6 +460,122 @@ class DriverIntegrationTest {
             assertEquals(java.util.Collections.singletonList("user.name"), body.get().get("_source"));
             assertTrue(rows.next());
             assertEquals("doc-1", rows.getString("_id"));
+        }
+    }
+
+    @Test
+    void updatesDocumentByPrimaryKey() throws Exception {
+        try (Connection connection = DriverManager.getConnection(url);
+                Statement statement = connection.createStatement()) {
+            assertEquals(1, statement.executeUpdate(
+                    "update records t set t.status = 'done', t.score = 7 where t._id = 'doc-1'"));
+            assertEquals(1, statement.getUpdateCount());
+            assertEquals(1L, statement.getLargeUpdateCount());
+            assertNull(statement.getResultSet());
+            assertEquals("/records/_update/doc-1", updatePath.get());
+            assertEquals("{\"doc\":{\"status\":\"done\",\"score\":7}}", JsonUtil.toJson(updateBody.get()));
+
+            updateNotFound.set(true);
+            assertEquals(0, statement.executeUpdate("update records set status = 'x' where _id = 'missing'"));
+            assertEquals(0, statement.getUpdateCount());
+            assertEquals(0L, statement.getLargeUpdateCount());
+            updateNotFound.set(false);
+
+            assertFalse(statement.execute("update records set flag = true where _id = 'doc-2'"));
+            assertEquals(1, statement.getUpdateCount());
+            assertNull(statement.getResultSet());
+        }
+    }
+
+    @Test
+    void encodesUpdateIdPathSegment() throws Exception {
+        try (Connection connection = DriverManager.getConnection(url);
+                Statement statement = connection.createStatement()) {
+            assertEquals(1, statement.executeUpdate("update records set status = 'x' where _id = 'a b/c'"));
+            assertEquals("/records/_update/a%20b%2Fc", updatePath.get());
+        }
+    }
+
+    @Test
+    void rejectsUpdateMisuseAndIsWritable() throws Exception {
+        try (Connection connection = DriverManager.getConnection(url);
+                Statement statement = connection.createStatement()) {
+            assertFalse(connection.isReadOnly());
+            assertFalse(connection.getMetaData().isReadOnly());
+            connection.setReadOnly(true);
+            connection.setReadOnly(false);
+            assertThrows(SQLException.class,
+                    () -> statement.executeQuery("update records set status = 'x' where _id = 'a'"));
+            assertThrows(SQLException.class, () -> statement.executeUpdate("select score from records"));
+            assertThrows(SQLException.class,
+                    () -> statement.executeUpdate("update records set status = 'x' where score = 1"));
+            assertThrows(SQLException.class, () -> statement.executeUpdate(
+                    "update records set status = 'x' where _id = 'a' and score > 1"));
+            assertThrows(SQLException.class, () -> statement.executeUpdate(
+                    "update records set status = 'x' where _id = 'a'", Statement.RETURN_GENERATED_KEYS));
+            assertEquals(-1, statement.getUpdateCount());
+        }
+    }
+
+    @Test
+    void updatesThroughPreparedStatementAndTransactions() throws Exception {
+        try (Connection connection = DriverManager.getConnection(url)) {
+            assertTrue(connection.getAutoCommit());
+            connection.setAutoCommit(false);
+            assertFalse(connection.getAutoCommit());
+            connection.commit();
+            connection.rollback();
+            try (PreparedStatement statement = connection.prepareStatement(
+                    "update records t set t.status = ?, t.score = ? where t._id = ?")) {
+                statement.setString(1, "done");
+                statement.setInt(2, 9);
+                statement.setString(3, "doc-1");
+                assertEquals(1, statement.executeUpdate());
+                assertEquals(1, statement.getUpdateCount());
+                assertEquals("/records/_update/doc-1", updatePath.get());
+                assertEquals("{\"doc\":{\"status\":\"done\",\"score\":9}}", JsonUtil.toJson(updateBody.get()));
+            }
+        }
+    }
+
+    @Test
+    void runsPreparedSelectAndBatch() throws Exception {
+        try (Connection connection = DriverManager.getConnection(url);
+                PreparedStatement select = connection.prepareStatement("select score from records where score >= ?")) {
+            select.setInt(1, 10);
+            try (ResultSet rows = select.executeQuery()) {
+                assertTrue(rows.next());
+                assertEquals(42, rows.getInt("score"));
+            }
+            assertTrue(JsonUtil.toJson(body.get().get("query")).contains("\"gte\":10"));
+        }
+        try (Connection connection = DriverManager.getConnection(url);
+                PreparedStatement update = connection.prepareStatement("update records set status = ? where _id = ?")) {
+            update.setString(1, "a");
+            update.setString(2, "doc-1");
+            update.addBatch();
+            update.setString(1, "b");
+            update.setString(2, "doc-2");
+            update.addBatch();
+            int[] counts = update.executeBatch();
+            assertEquals(2, counts.length);
+            assertEquals(1, counts[0]);
+            assertEquals(1, counts[1]);
+        }
+    }
+
+    @Test
+    void rejectsPreparedStatementMisuse() throws Exception {
+        try (Connection connection = DriverManager.getConnection(url);
+                PreparedStatement update = connection.prepareStatement(
+                        "update records set status = ? where _id = ?");
+                PreparedStatement select = connection.prepareStatement("select score from records")) {
+            update.setString(1, "x");
+            update.setString(2, "a");
+            assertThrows(SQLException.class, select::executeUpdate);
+            assertThrows(SQLException.class, update::executeQuery);
+            assertThrows(SQLException.class, () -> connection.prepareStatement(
+                    "select score from records", Statement.RETURN_GENERATED_KEYS));
         }
     }
 }

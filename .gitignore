@@ -13,3 +13,4 @@ target
 generated
 generated_tests
 .env
+.codegraph

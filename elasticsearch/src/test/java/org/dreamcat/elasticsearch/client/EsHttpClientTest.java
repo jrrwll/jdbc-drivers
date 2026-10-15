@@ -1,4 +1,4 @@
-package org.dreamcat.elasticsearch;
+package org.dreamcat.elasticsearch.client;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.sun.net.httpserver.HttpServer;
+import org.dreamcat.elasticsearch.config.EsConfig;
 import org.junit.jupiter.api.Test;
 
 import java.net.InetSocketAddress;

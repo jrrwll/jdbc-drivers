@@ -1,4 +1,6 @@
-package org.dreamcat.elasticsearch;
+package org.dreamcat.elasticsearch.jdbc;
+
+import org.dreamcat.elasticsearch.client.SearchResult;
 
 import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Method;
@@ -25,7 +27,7 @@ final class EsResultSetHandler implements InvocationHandler {
 
     EsResultSetHandler(SearchResult result) {
         this.result = result;
-        this.metadata = (ResultSetMetaData) Proxy.newProxyInstance(Driver.class.getClassLoader(),
+        this.metadata = (ResultSetMetaData) Proxy.newProxyInstance(EsResultSetHandler.class.getClassLoader(),
                 new Class<?>[]{ResultSetMetaData.class}, new EsResultSetMetaDataHandler(result));
     }
 

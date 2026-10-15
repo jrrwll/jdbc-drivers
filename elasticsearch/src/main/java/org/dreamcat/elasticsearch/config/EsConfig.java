@@ -1,4 +1,4 @@
-package org.dreamcat.elasticsearch;
+package org.dreamcat.elasticsearch.config;
 
 import java.net.URI;
 import java.net.URLDecoder;
@@ -12,12 +12,16 @@ import java.util.Map;
 import java.util.Properties;
 import java.util.regex.Pattern;
 
-final class EsConfig {
+public final class EsConfig {
 
-    final String endpoint;
-    final String urlPrefix;
-    final String user;
-    final String password;
+    public static final String URL_PREFIX = "jdbc:es:";
+    public static final String ELASTICSEARCH_URL_PREFIX = "jdbc:elasticsearch:";
+    public static final String LEGACY_URL_PREFIX = "jdbc:es7:";
+
+    public final String endpoint;
+    public final String urlPrefix;
+    public final String user;
+    public final String password;
     private final List<Pattern> indexPatterns;
 
     private EsConfig(String endpoint, String urlPrefix, String user, String password, List<Pattern> indexPatterns) {
@@ -28,8 +32,16 @@ final class EsConfig {
         this.indexPatterns = indexPatterns;
     }
 
-    static EsConfig parse(String jdbcUrl, Properties supplied) throws SQLException {
-        String prefix = Driver.urlPrefix(jdbcUrl);
+    public static String urlPrefix(String url) {
+        if (url == null) return null;
+        for (String prefix : new String[]{URL_PREFIX, ELASTICSEARCH_URL_PREFIX, LEGACY_URL_PREFIX}) {
+            if (url.startsWith(prefix)) return prefix;
+        }
+        return null;
+    }
+
+    public static EsConfig parse(String jdbcUrl, Properties supplied) throws SQLException {
+        String prefix = urlPrefix(jdbcUrl);
         if (prefix == null) throw new SQLException("Unsupported Elasticsearch JDBC URL prefix");
         String raw = jdbcUrl.substring(prefix.length());
         if (!raw.startsWith("//")) throw new SQLException(
@@ -68,7 +80,7 @@ final class EsConfig {
                 property(info, values, "password"), Collections.unmodifiableList(indexPatterns));
     }
 
-    boolean allowsIndex(String index) {
+    public boolean allowsIndex(String index) {
         if (indexPatterns.isEmpty()) return true;
         for (Pattern pattern : indexPatterns) {
             if (pattern.matcher(index).matches()) return true;
@@ -76,7 +88,7 @@ final class EsConfig {
         return false;
     }
 
-    boolean hasIndexFilter() {
+    public boolean hasIndexFilter() {
         return !indexPatterns.isEmpty();
     }
 
