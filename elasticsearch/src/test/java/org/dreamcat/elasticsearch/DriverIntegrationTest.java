@@ -16,6 +16,7 @@ import org.junit.jupiter.api.Test;
 import java.io.ByteArrayOutputStream;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.sql.BatchUpdateException;
 import java.sql.Connection;
 import java.sql.DatabaseMetaData;
 import java.sql.DriverManager;
@@ -23,6 +24,9 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Properties;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -40,6 +44,9 @@ class DriverIntegrationTest {
     private final AtomicReference<Map<String, Object>> updateBody = new AtomicReference<>();
     private final AtomicReference<String> updatePath = new AtomicReference<>();
     private final AtomicBoolean updateNotFound = new AtomicBoolean();
+    private final AtomicReference<String> bulkBody = new AtomicReference<>();
+    private final AtomicReference<String> bulkResponse = new AtomicReference<>();
+    private final AtomicInteger bulkRequests = new AtomicInteger();
 
     @BeforeEach
     void startServer() throws Exception {
@@ -85,6 +92,47 @@ class DriverIntegrationTest {
             updateBody.set(JsonUtil.fromJsonObject(new String(request.toByteArray(), StandardCharsets.UTF_8)));
             reply(exchange, updateNotFound.get() ? "{\"result\":\"not_found\"}" : "{\"result\":\"updated\"}");
         });
+        server.createContext("/records/_bulk", exchange -> {
+            assertEquals("POST", exchange.getRequestMethod());
+            auth.set(exchange.getRequestHeaders().getFirst("Authorization"));
+            ByteArrayOutputStream request = new ByteArrayOutputStream();
+            byte[] buffer = new byte[4096];
+            int count;
+            while ((count = exchange.getRequestBody().read(buffer)) != -1) request.write(buffer, 0, count);
+            String payload = new String(request.toByteArray(), StandardCharsets.UTF_8);
+            bulkBody.set(payload);
+            bulkRequests.incrementAndGet();
+            if (bulkResponse.get() != null) {
+                reply(exchange, bulkResponse.get());
+                return;
+            }
+            assertTrue(payload.endsWith("\n"));
+            String[] lines = payload.split("\n");
+            List<Object> items = new ArrayList<>();
+            for (int i = 0; i < lines.length; i++) {
+                Map<String, Object> action = JsonUtil.fromJsonObject(lines[i]);
+                String operation = action.keySet().iterator().next();
+                Map<?, ?> metadata = (Map<?, ?>) action.get(operation);
+                Map<String, Object> item = new LinkedHashMap<>();
+                item.put("_id", metadata.get("_id"));
+                if ("create".equals(operation)) {
+                    i++; // Document source follows each create action.
+                    item.put("status", 201);
+                    item.put("result", "created");
+                } else {
+                    assertEquals("delete", operation);
+                    boolean missing = "missing".equals(metadata.get("_id"));
+                    item.put("status", missing ? 404 : 200);
+                    item.put("result", missing ? "not_found" : "deleted");
+                }
+                Map<String, Object> wrapped = new LinkedHashMap<>();
+                wrapped.put(operation, item);
+                items.add(wrapped);
+            }
+            Map<String, Object> response = new LinkedHashMap<>();
+            response.put("items", items);
+            reply(exchange, JsonUtil.toJson(response));
+        });
         server.createContext("/", exchange -> {
             String authorization = exchange.getRequestHeaders().getFirst("Authorization");
             if (rejectRoot.get() || authorization != null
@@ -95,7 +143,7 @@ class DriverIntegrationTest {
             }
         });
         server.start();
-        url = "jdbc:es7://127.0.0.1:" + server.getAddress().getPort();
+        url = "jdbc:elasticsearch://127.0.0.1:" + server.getAddress().getPort();
     }
 
     @AfterEach
@@ -120,7 +168,7 @@ class DriverIntegrationTest {
     @Test
     void connectsUsingBothElasticsearchUrlPrefixesAndLegacyPrefix() throws Exception {
         Driver driver = new Driver();
-        for (String prefix : new String[]{"jdbc:es:", "jdbc:elasticsearch:", "jdbc:es7:"}) {
+        for (String prefix : new String[]{"jdbc:es:", "jdbc:elasticsearch:"}) {
             String endpoint = prefix + "//127.0.0.1:" + server.getAddress().getPort();
             assertTrue(driver.acceptsURL(endpoint));
             try (Connection connection = DriverManager.getConnection(endpoint + "?index=rec%&index=absent");
@@ -460,6 +508,149 @@ class DriverIntegrationTest {
             assertEquals(java.util.Collections.singletonList("user.name"), body.get().get("_source"));
             assertTrue(rows.next());
             assertEquals("doc-1", rows.getString("_id"));
+        }
+    }
+
+    @Test
+    void insertsRowsWithCreateSemanticsAndOptionalIds() throws Exception {
+        try (Connection connection = DriverManager.getConnection(url);
+                Statement statement = connection.createStatement()) {
+            assertEquals(2, statement.executeUpdate("insert into records (_id, name, score) "
+                    + "values ('a/b', 'Ada', 7), ('中文', 'Lin', null)"));
+            assertEquals(2, statement.getUpdateCount());
+            assertNull(statement.getResultSet());
+            assertEquals("{\"create\":{\"_id\":\"a/b\"}}\n{\"name\":\"Ada\",\"score\":7}\n"
+                    + "{\"create\":{\"_id\":\"中文\"}}\n{\"name\":\"Lin\",\"score\":null}\n", bulkBody.get());
+            assertFalse(statement.execute("insert into records (name) values ('Auto')"));
+            assertEquals("{\"create\":{}}\n{\"name\":\"Auto\"}\n", bulkBody.get());
+            assertEquals(1L, statement.getLargeUpdateCount());
+            assertThrows(SQLException.class,
+                    () -> statement.executeQuery("insert into records (score) values (7)"));
+            assertEquals(-1, statement.getUpdateCount());
+        }
+    }
+
+    @Test
+    void deletesOnlyIdsAndExposesIgnoredFieldWarnings() throws Exception {
+        try (Connection connection = DriverManager.getConnection(url);
+                Statement statement = connection.createStatement()) {
+            ResultSet previous = statement.executeQuery("select score from records");
+            assertEquals(2, statement.executeUpdate("delete from records t where "
+                    + "t._id in ('a/b', '中文', 'a/b', 'missing') and t.score = 1 and t.name = 'old'"));
+            assertTrue(previous.isClosed());
+            assertNull(statement.getResultSet());
+            assertEquals(2, statement.getUpdateCount());
+            assertEquals("{\"delete\":{\"_id\":\"a/b\"}}\n{\"delete\":{\"_id\":\"中文\"}}\n"
+                    + "{\"delete\":{\"_id\":\"missing\"}}\n", bulkBody.get());
+            assertTrue(statement.getWarnings().getMessage().contains("score"));
+            assertTrue(statement.getWarnings().getMessage().contains("name"));
+            assertEquals("01000", statement.getWarnings().getSQLState());
+            statement.clearWarnings();
+            assertNull(statement.getWarnings());
+            assertFalse(statement.execute("delete from records where _id = 'a' or _id = 'b'"));
+            assertEquals(2, statement.getUpdateCount());
+            assertNull(statement.getWarnings());
+            assertEquals(0L, statement.executeLargeUpdate("delete from records where _id = 'missing'"));
+            int requests = bulkRequests.get();
+            assertEquals(0, statement.executeUpdate("delete from records where _id = 'a' and _id = 'b'"));
+            assertEquals(requests, bulkRequests.get());
+        }
+    }
+
+    @Test
+    void rejectsUnsafeDeletesAndDisallowedWritesBeforeHttpRequest() throws Exception {
+        try (Connection connection = DriverManager.getConnection(url + "?index=records");
+                Statement statement = connection.createStatement()) {
+            for (String sql : new String[]{
+                    "delete from records", "delete from records where score = 1",
+                    "delete from records where _id = 'a' and score > 1",
+                    "delete from records where _id = 'a' and score = other",
+                    "delete from records where _id = 'a' or score = 1",
+                    "delete from records where _id = 'a' and _id in ('a', null)",
+                    "delete from records where _id = 'a' limit 1",
+                    "delete from other where _id = 'a'",
+                    "insert into other (_id, score) values ('a', 1)",
+                    "insert into records (score) values (1), (other)"
+            }) {
+                assertThrows(SQLException.class, () -> statement.executeUpdate(sql), sql);
+                assertEquals(-1, statement.getUpdateCount());
+            }
+            assertThrows(SQLException.class, () -> statement.executeQuery("delete from records where _id = 'a'"));
+            assertEquals(0, bulkRequests.get());
+        }
+    }
+
+    @Test
+    void insertsAndDeletesThroughPreparedStatementsAndBatches() throws Exception {
+        Properties properties = new Properties();
+        properties.setProperty("user", "alice");
+        properties.setProperty("password", "new-secret");
+        try (Connection connection = DriverManager.getConnection(url, properties);
+                PreparedStatement insert = connection.prepareStatement("insert into records (_id, name) values (?, ?)");
+                PreparedStatement delete = connection.prepareStatement(
+                        "delete from records where _id in (?, ?) and name = ?")) {
+            insert.setString(1, "a");
+            insert.setString(2, "O'Brien");
+            insert.addBatch();
+            insert.setString(1, "b");
+            insert.setNull(2, java.sql.Types.VARCHAR);
+            insert.addBatch();
+            assertTrue(java.util.Arrays.equals(new int[]{1, 1}, insert.executeBatch()));
+            assertEquals("Basic " + Base64Util.encodeAsString("alice:new-secret"), auth.get());
+            delete.setString(1, "a");
+            delete.setString(2, "missing");
+            delete.setString(3, "ignored");
+            assertFalse(delete.execute());
+            assertEquals(1, delete.getUpdateCount());
+            assertTrue(delete.getWarnings().getMessage().contains("name"));
+            delete.clearWarnings();
+            assertNull(delete.getWarnings());
+            delete.addBatch();
+            assertTrue(java.util.Arrays.equals(new long[]{1}, delete.executeLargeBatch()));
+            assertTrue(delete.getWarnings().getMessage().contains("name"));
+            delete.setString(1, "b");
+            assertEquals(1L, delete.executeLargeUpdate());
+            assertThrows(SQLException.class, delete::executeQuery);
+            assertNull(delete.getWarnings());
+        }
+    }
+
+    @Test
+    void reportsBulkItemErrorsAndRejectsMalformedResponses() throws Exception {
+        try (Connection connection = DriverManager.getConnection(url);
+                Statement statement = connection.createStatement()) {
+            bulkResponse.set("{\"errors\":true,\"items\":[{\"create\":{\"status\":201,\"result\":\"created\"}},"
+                    + "{\"create\":{\"_id\":\"b\",\"status\":409,"
+                    + "\"error\":{\"type\":\"version_conflict_engine_exception\"}}}]}");
+            SQLException conflict = assertThrows(SQLException.class, () -> statement.executeUpdate(
+                    "insert into records (_id) values ('a'), ('b')"));
+            assertTrue(conflict.getMessage().contains("409"));
+            assertTrue(conflict.getMessage().contains("1 document(s) succeeded"));
+            assertEquals(-1, statement.getUpdateCount());
+            bulkResponse.set("{\"errors\":true,\"items\":[{\"delete\":{\"_id\":\"a\",\"status\":404,"
+                    + "\"error\":{\"type\":\"index_not_found_exception\"}}}]}");
+            assertThrows(SQLException.class, () -> statement.executeUpdate("delete from records where _id = 'a'"));
+            for (String response : new String[]{"null", "not json", "{}", "{\"items\":[]}",
+                    "{\"items\":[{}]}", "{\"items\":[{\"delete\":{\"status\":200,\"result\":\"noop\"}}]}"}) {
+                bulkResponse.set(response);
+                assertThrows(SQLException.class,
+                        () -> statement.executeUpdate("delete from records where _id = 'a'"), response);
+            }
+        }
+    }
+
+    @Test
+    void preparedBatchReportsCompletedStatementsBeforeInvalidDelete() throws Exception {
+        try (Connection connection = DriverManager.getConnection(url);
+                PreparedStatement delete = connection.prepareStatement("delete from records where _id = ?")) {
+            delete.setString(1, "a");
+            delete.addBatch();
+            delete.setNull(1, java.sql.Types.VARCHAR);
+            delete.addBatch();
+            BatchUpdateException failure = assertThrows(BatchUpdateException.class, delete::executeBatch);
+            assertTrue(java.util.Arrays.equals(new int[]{1}, failure.getUpdateCounts()));
+            assertEquals(1, bulkRequests.get());
+            assertEquals(0, delete.executeBatch().length);
         }
     }
 

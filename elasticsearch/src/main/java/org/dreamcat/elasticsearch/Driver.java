@@ -18,7 +18,6 @@ public class Driver implements java.sql.Driver {
 
     public static final String URL_PREFIX = EsConfig.URL_PREFIX;
     public static final String ELASTICSEARCH_URL_PREFIX = EsConfig.ELASTICSEARCH_URL_PREFIX;
-    public static final String LEGACY_URL_PREFIX = EsConfig.LEGACY_URL_PREFIX;
     public static final int MAJOR_VERSION = 0;
     public static final int MINOR_VERSION = 1;
 

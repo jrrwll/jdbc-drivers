@@ -21,7 +21,8 @@ class SqlUpdateTest {
         assertEquals("doc-1", update.id);
         assertEquals("done", update.doc.get("status"));
         assertEquals(100L, update.doc.get("score"));
-        assertEquals("{\"doc\":{\"status\":\"done\",\"score\":100}}", JsonUtil.toJson(SqlSupport.map("doc", update.doc)));
+        assertEquals("{\"doc\":{\"status\":\"done\",\"score\":100}}",
+                JsonUtil.toJson(SqlSupport.map("doc", update.doc)));
     }
 
     @Test
@@ -117,12 +118,14 @@ class SqlUpdateTest {
     }
 
     @Test
-    void dispatchesSelectAndUpdateAndRejectsOtherStatements() throws Exception {
+    void dispatchesSupportedStatementsAndRejectsOtherStatements() throws Exception {
         assertTrue(SqlCommands.parse("select score from records", null) instanceof SqlQuery);
         assertTrue(SqlCommands.parse(
                 "update records set status = 'x' where _id = 'a'", null) instanceof SqlUpdate);
         assertThrows(SQLException.class, () -> SqlCommands.parse("delete from records", null));
-        assertThrows(SQLException.class, () -> SqlCommands.parse("insert into records (a) values (1)", null));
+        assertTrue(SqlCommands.parse("insert into records (a) values (1)", null) instanceof SqlInsert);
+        assertTrue(SqlCommands.parse("delete from records where _id = 'a'", null) instanceof SqlDelete);
+        assertThrows(SQLException.class, () -> SqlCommands.parse("drop table records", null));
         assertThrows(SQLException.class, () -> SqlQuery.parse(
                 "update records set status = 'x' where _id = 'a'"));
     }

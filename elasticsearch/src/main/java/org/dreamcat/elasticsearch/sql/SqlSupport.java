@@ -21,7 +21,7 @@ import java.sql.SQLException;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
-/** Parsing and value helpers shared by the SELECT and UPDATE statement translators. */
+/** Parsing and value helpers shared by the SQL statement translators. */
 public final class SqlSupport {
 
     private SqlSupport() {
@@ -37,7 +37,7 @@ public final class SqlSupport {
     }
 
     static Object literal(Expression expression) throws SQLException {
-        if (expression instanceof StringValue) return ((StringValue) expression).getValue();
+        if (expression instanceof StringValue) return ((StringValue) expression).getNotExcapedValue();
         if (expression instanceof LongValue) return ((LongValue) expression).getValue();
         if (expression instanceof DoubleValue) return ((DoubleValue) expression).getValue();
         if (expression instanceof Column && ((Column) expression).getTable() == null) {
@@ -83,6 +83,36 @@ public final class SqlSupport {
             }
         }
         return value;
+    }
+
+    static String writeIndex(Table table, String catalog) throws SQLException {
+        String index = table == null ? null : identifier(table.getName());
+        if (index == null || !index.matches("[A-Za-z0-9._-]+") || ".".equals(index) || "..".equals(index)
+                || table.getNameParts().size() > 2 || table.getPivot() != null || table.getUnPivot() != null
+                || table.getIndexHint() != null || table.getSqlServerHints() != null
+                || table.getSampleClause() != null) {
+            throw new SQLException("Only a plain single index is supported");
+        }
+        if (table.getSchemaName() != null && (catalog == null
+                || !identifier(table.getSchemaName()).equals(catalog))) {
+            throw new SQLException("Unknown catalog: " + table.getSchemaName());
+        }
+        return index;
+    }
+
+    static String writeQualifier(Table table, String index) throws SQLException {
+        if (table.getAlias() == null) return index;
+        String alias = identifier(table.getAlias().getName());
+        if (alias == null || !alias.matches("[A-Za-z_][A-Za-z0-9_]*"))
+            throw new SQLException("Invalid table alias");
+        return alias;
+    }
+
+    static String documentId(Expression expression) throws SQLException {
+        Object value = literal(expression);
+        if (!(value instanceof String) && !(value instanceof Number) || value.toString().isEmpty())
+            throw new SQLException("_id must be a non-empty string or number");
+        return value.toString();
     }
 
     static int nonNegativeInt(Expression expression, String name) throws SQLException {

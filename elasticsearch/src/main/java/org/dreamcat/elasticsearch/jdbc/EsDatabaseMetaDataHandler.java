@@ -56,7 +56,7 @@ final class EsDatabaseMetaDataHandler implements InvocationHandler {
     @Override
     public Object invoke(Object proxy, Method method, Object[] args) throws Throwable {
         if (method.getDeclaringClass() == Object.class)
-            return JdbcSupport.objectMethod(proxy, method, args, "ES7DatabaseMetaData");
+            return JdbcSupport.objectMethod(proxy, method, args, "ESDatabaseMetaData");
         if (connection.isClosed()) throw new SQLException("Connection is closed");
         switch (method.getName()) {
             case "getCatalogs":

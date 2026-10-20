@@ -16,7 +16,6 @@ public final class EsConfig {
 
     public static final String URL_PREFIX = "jdbc:es:";
     public static final String ELASTICSEARCH_URL_PREFIX = "jdbc:elasticsearch:";
-    public static final String LEGACY_URL_PREFIX = "jdbc:es7:";
 
     public final String endpoint;
     public final String urlPrefix;
@@ -34,7 +33,7 @@ public final class EsConfig {
 
     public static String urlPrefix(String url) {
         if (url == null) return null;
-        for (String prefix : new String[]{URL_PREFIX, ELASTICSEARCH_URL_PREFIX, LEGACY_URL_PREFIX}) {
+        for (String prefix : new String[]{URL_PREFIX, ELASTICSEARCH_URL_PREFIX}) {
             if (url.startsWith(prefix)) return prefix;
         }
         return null;

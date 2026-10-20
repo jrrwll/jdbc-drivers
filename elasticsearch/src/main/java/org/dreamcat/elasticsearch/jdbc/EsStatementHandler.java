@@ -25,7 +25,7 @@ final class EsStatementHandler implements InvocationHandler {
     @Override
     public Object invoke(Object proxy, Method method, Object[] args) throws Throwable {
         if (method.getDeclaringClass() == Object.class)
-            return JdbcSupport.objectMethod(proxy, method, args, "ES7Statement");
+            return JdbcSupport.objectMethod(proxy, method, args, "ESStatement");
         switch (method.getName()) {
             case "close":
                 closed = true;
@@ -79,8 +79,9 @@ final class EsStatementHandler implements InvocationHandler {
                 int mode = args == null || args.length == 0 ? Statement.CLOSE_CURRENT_RESULT : (Integer) args[0];
                 return executor.getMoreResults(mode);
             case "getWarnings":
-                return null;
+                return executor.getWarnings();
             case "clearWarnings":
+                executor.clearWarnings();
                 return null;
             case "getFetchDirection":
                 return ResultSet.FETCH_FORWARD;

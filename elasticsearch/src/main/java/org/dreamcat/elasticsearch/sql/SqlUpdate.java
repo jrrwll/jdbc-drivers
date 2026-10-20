@@ -100,7 +100,8 @@ public final class SqlUpdate implements SqlCommand {
             }
             String field = SqlSupport.field((Column) ((EqualsTo) condition).getLeftExpression(), alias);
             if (!"_id".equals(field)) continue;
-            if (id != null) throw new SQLException("Only one primary key condition _id = <value> is supported in WHERE");
+            if (id != null)
+                throw new SQLException("Only one primary key condition _id = <value> is supported in WHERE");
             id = String.valueOf(SqlSupport.literal(((EqualsTo) condition).getRightExpression()));
         }
         if (id == null) throw new SQLException("A primary key condition _id = <value> is required in WHERE");

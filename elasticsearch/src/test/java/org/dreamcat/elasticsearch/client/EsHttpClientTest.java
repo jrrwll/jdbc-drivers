@@ -42,7 +42,7 @@ class EsHttpClientTest {
         });
         server.start();
         try {
-            EsHttpClient client = new EsHttpClient(EsConfig.parse("jdbc:es7://127.0.0.1:"
+            EsHttpClient client = new EsHttpClient(EsConfig.parse("jdbc:es://127.0.0.1:"
                     + server.getAddress().getPort(), null));
             for (int status : new int[]{400, 401, 403, 404, 500}) {
                 String path = "/status" + status;
@@ -74,7 +74,7 @@ class EsHttpClientTest {
         int port = server.getAddress().getPort();
         server.start();
         server.stop(0);
-        EsHttpClient client = new EsHttpClient(EsConfig.parse("jdbc:es7://127.0.0.1:" + port, null));
+        EsHttpClient client = new EsHttpClient(EsConfig.parse("jdbc:es://127.0.0.1:" + port, null));
         SQLException error = assertThrows(SQLException.class, () -> client.postJson("/records/_search", "{}"));
         assertEquals("08006", error.getSQLState());
         assertNotNull(error.getCause());

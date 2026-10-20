@@ -19,7 +19,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
-/** A PreparedStatement that binds parameters into the supported SELECT/UPDATE SQL before execution. */
+/** A PreparedStatement that binds parameters into supported SQL before execution. */
 final class EsPreparedStatementHandler implements InvocationHandler {
 
     private final Connection connection;
@@ -39,7 +39,7 @@ final class EsPreparedStatementHandler implements InvocationHandler {
     @Override
     public Object invoke(Object proxy, Method method, Object[] args) throws Throwable {
         if (method.getDeclaringClass() == Object.class)
-            return JdbcSupport.objectMethod(proxy, method, args, "ES7PreparedStatement");
+            return JdbcSupport.objectMethod(proxy, method, args, "ESPreparedStatement");
         switch (method.getName()) {
             case "close":
                 closed = true;
@@ -106,8 +106,9 @@ final class EsPreparedStatementHandler implements InvocationHandler {
             case "executeLargeBatch":
                 return executeBatch(true);
             case "getWarnings":
-                return null;
+                return executor.getWarnings();
             case "clearWarnings":
+                executor.clearWarnings();
                 return null;
             case "getFetchDirection":
                 return ResultSet.FETCH_FORWARD;
@@ -248,7 +249,7 @@ final class EsPreparedStatementHandler implements InvocationHandler {
                         case "isWrapperFor":
                             return ((Class<?>) args[0]).isInstance(metaProxy);
                         case "toString":
-                            return "ES7ParameterMetaData";
+                            return "ESParameterMetaData";
                         case "hashCode":
                             return System.identityHashCode(metaProxy);
                         case "equals":

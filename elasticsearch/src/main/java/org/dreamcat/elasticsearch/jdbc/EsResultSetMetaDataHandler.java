@@ -10,8 +10,7 @@ import java.sql.Types;
 import java.util.Locale;
 import java.util.Map;
 
-final class
-EsResultSetMetaDataHandler implements InvocationHandler {
+final class EsResultSetMetaDataHandler implements InvocationHandler {
 
     private final SearchResult result;
 
@@ -22,7 +21,7 @@ EsResultSetMetaDataHandler implements InvocationHandler {
     @Override
     public Object invoke(Object proxy, Method method, Object[] args) throws Throwable {
         if (method.getDeclaringClass() == Object.class)
-            return JdbcSupport.objectMethod(proxy, method, args, "ES7ResultSetMetaData");
+            return JdbcSupport.objectMethod(proxy, method, args, "ESResultSetMetaData");
         int index;
         switch (method.getName()) {
             case "getColumnCount":

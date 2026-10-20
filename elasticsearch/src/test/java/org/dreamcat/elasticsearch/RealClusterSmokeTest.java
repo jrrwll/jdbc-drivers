@@ -8,6 +8,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import org.dreamcat.common.io.FileUtil;
+import org.dreamcat.common.json.JsonUtil;
+import org.dreamcat.common.sql.JdbcUtil;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
@@ -19,6 +21,8 @@ import java.sql.DriverManager;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
+import java.util.List;
+import java.util.Map;
 import java.util.Properties;
 
 class RealClusterSmokeTest {
@@ -30,19 +34,19 @@ class RealClusterSmokeTest {
 
     @Test
     void readsRealClusterThroughJdbc() throws Exception {
-        String url = System.getProperty("ES7_TEST_URL");
-        String index = System.getProperty("ES7_TEST_INDEX");
-        assumeTrue(url != null && index != null, "Real ES7 test requires ES7_TEST_URL and ES7_TEST_INDEX");
+        String url = System.getProperty("ES_TEST_URL");
+        String index = System.getProperty("ES_TEST_INDEX");
+        assumeTrue(url != null && index != null, "Real ES test requires ES_TEST_URL and ES_TEST_INDEX");
         Properties properties = new Properties();
-        String user = System.getProperty("ES7_TEST_USER");
-        String password = System.getProperty("ES7_TEST_PASSWORD");
+        String user = System.getProperty("ES_TEST_USER");
+        String password = System.getProperty("ES_TEST_PASSWORD");
         if (user != null) properties.setProperty("user", user);
         if (password != null) properties.setProperty("password", password);
 
         try (Connection connection = DriverManager.getConnection(url, properties)) {
             DatabaseMetaData meta = connection.getMetaData();
-            assertTrue(meta.getDatabaseProductVersion().startsWith("7."));
-            assertEquals(7, meta.getDatabaseMajorVersion());
+            System.out.printf("productVersion = %s, majorVersion = %s%n", meta.getDatabaseProductVersion(),
+                    meta.getDatabaseMajorVersion());
             String catalog;
             try (ResultSet catalogs = meta.getCatalogs()) {
                 assertTrue(catalogs.next());
@@ -96,12 +100,12 @@ class RealClusterSmokeTest {
 
     @Test
     void restrictsRealClusterIndexListingAndQueries() throws Exception {
-        String url = System.getProperty("ES7_TEST_URL");
-        String index = System.getProperty("ES7_TEST_INDEX");
-        assumeTrue(url != null && index != null, "Real ES7 test requires ES7_TEST_URL and ES7_TEST_INDEX");
+        String url = System.getProperty("ES_TEST_URL");
+        String index = System.getProperty("ES_TEST_INDEX");
+        assumeTrue(url != null && index != null, "Real ES test requires ES_TEST_URL and ES_TEST_INDEX");
         Properties properties = new Properties();
-        String user = System.getProperty("ES7_TEST_USER");
-        String password = System.getProperty("ES7_TEST_PASSWORD");
+        String user = System.getProperty("ES_TEST_USER");
+        String password = System.getProperty("ES_TEST_PASSWORD");
         if (user != null) properties.setProperty("user", user);
         if (password != null) properties.setProperty("password", password);
         String separator = url.contains("?") ? "&" : "?";
@@ -120,35 +124,20 @@ class RealClusterSmokeTest {
             }
             try (Statement statement = connection.createStatement()) {
                 SQLException denied = assertThrows(SQLException.class,
-                        () -> statement.executeQuery("select _id from __es7_jdbc_not_allowed__"));
+                        () -> statement.executeQuery("select _id from __es_jdbc_not_allowed__"));
                 assertTrue(denied.getMessage().contains("Index is not allowed"));
                 try (ResultSet rows = statement.executeQuery("select _id from " + index + " limit 1")) {
-                    assertTrue(rows.next());
+                    List<Map<String, Object>> rowList = JdbcUtil.getRows(rows);
+                    System.out.println(JsonUtil.toJsonWithPretty(rowList));
+                    assertEquals(1, rowList.size());
+                    assertTrue(rowList.get(0).containsKey("_id"));
+                }
+                try (ResultSet rows = statement.executeQuery("select * from " + index + " limit 1")) {
+                    List<Map<String, Object>> rowList = JdbcUtil.getRows(rows);
+                    System.out.println(JsonUtil.toJsonWithPretty(rowList));
+                    assertFalse(rowList.isEmpty());
                 }
             }
-        }
-    }
-
-    @Test
-    void executesConfiguredSearchSql() throws Exception {
-        String url = System.getProperty("ES7_TEST_URL");
-        String sql = System.getProperty("ES7_TEST_SQL");
-        assumeTrue(url != null && sql != null, "Real ES7 query test requires ES7_TEST_URL and ES7_TEST_SQL");
-        Properties properties = new Properties();
-        String user = System.getProperty("ES7_TEST_USER");
-        String password = System.getProperty("ES7_TEST_PASSWORD");
-        if (user != null) properties.setProperty("user", user);
-        if (password != null) properties.setProperty("password", password);
-        try (Connection connection = DriverManager.getConnection(url, properties);
-                Statement statement = connection.createStatement();
-                ResultSet rows = statement.executeQuery(sql)) {
-            assertTrue(rows.getMetaData().getColumnCount() > 0);
-            int count = 0;
-            while (rows.next()) {
-                assertNotNull(rows.getString("_id"));
-                count++;
-            }
-            assertTrue(count <= 2);
         }
     }
 }

@@ -35,7 +35,7 @@ public final class EsConnectionHandler implements InvocationHandler {
     @Override
     public Object invoke(Object proxy, Method method, Object[] args) throws Throwable {
         if (method.getDeclaringClass() == Object.class)
-            return JdbcSupport.objectMethod(proxy, method, args, "ES7Connection[" + config.endpoint + "]");
+            return JdbcSupport.objectMethod(proxy, method, args, "ESConnection[" + config.endpoint + "]");
         switch (method.getName()) {
             case "close":
                 closed = true;
@@ -60,7 +60,8 @@ public final class EsConnectionHandler implements InvocationHandler {
                         || ((Integer) args[1]) != java.sql.ResultSet.CONCUR_READ_ONLY)) {
                     throw new SQLFeatureNotSupportedException("Only forward-only read-only statements are supported");
                 }
-                return Proxy.newProxyInstance(EsConnectionHandler.class.getClassLoader(), new Class<?>[]{Statement.class},
+                return Proxy.newProxyInstance(EsConnectionHandler.class.getClassLoader(),
+                        new Class<?>[]{Statement.class},
                         new EsStatementHandler((Connection) proxy, client, updateClient));
             case "prepareStatement":
                 validatePreparedStatement(args);

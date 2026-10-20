@@ -34,7 +34,7 @@ final class EsResultSetHandler implements InvocationHandler {
     @Override
     public Object invoke(Object proxy, Method method, Object[] args) throws Throwable {
         if (method.getDeclaringClass() == Object.class)
-            return JdbcSupport.objectMethod(proxy, method, args, "ES7ResultSet");
+            return JdbcSupport.objectMethod(proxy, method, args, "ESResultSet");
         switch (method.getName()) {
             case "next":
                 checkOpen();
